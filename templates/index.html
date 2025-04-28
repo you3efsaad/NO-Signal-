@@ -1,0 +1,281 @@
+<!DOCTYPE HTML>
+<html lang="en" dir="ltr">
+
+<head>
+    <title>ESP32 Power Monitor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="icon" type="image/x-icon"
+        href="{{ url_for('static', filename='6ca943fd-66ae-4afb-8374-b16d9bf9bd7c.png') }}">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700&display=swap" rel="stylesheet">
+
+</head>
+
+<body>
+    <h1>
+        <img src="static/freepik__background__95302+++.png" alt="Smart Watt Icon">
+        <span>Safe Power</span>
+    </h1>
+    <main>
+        <div id="alert" style="display:none; background-color: red; color: white; padding: 10px; margin-top: 10px;">
+            ⚠️ Power limit exceeded!
+        </div>
+        <div class="grid">
+            <div class="card">
+                <i class="fas fa-bolt icon"></i>
+                <div class="content">
+                    <div class="label">VOLTAGE</div>
+                    <div class="value" id="voltage">--<span class="unit">V</span></div>
+                </div>
+            </div>
+            <div class="card">
+                <i class="fas fa-exchange-alt icon"></i>
+                <div class="content">
+                    <div class="label">CURRENT</div>
+                    <div class="value" id="current">--<span class="unit">A</span></div>
+                </div>
+            </div>
+            <div class="card">
+                <i class="fas fa-plug icon"></i>
+                <div class="content">
+                    <div class="label">POWER</div>
+                    <div class="value" id="power">--<span class="unit">W</span></div>
+                </div>
+            </div>
+            <div class="card">
+                <i class="fas fa-chart-line icon"></i>
+                <div class="content">
+                    <div class="label">ENERGY</div>
+                    <div class="value" id="energy">--<span class="unit">kWh</span></div>
+                </div>
+            </div>
+            <div class="card">
+                <i class="fas fa-wave-square icon"></i>
+                <div class="content">
+                    <div class="label">FREQUENCY</div>
+                    <div class="value" id="frequency">--<span class="unit">Hz</span></div>
+                </div>
+            </div>
+            <div class="card">
+                <i class="fas fa-percent icon"></i>
+                <div class="content">
+                    <div class="label">POWER FACTOR</div>
+                    <div class="value" id="pf">--</div>
+                </div>
+
+            </div>
+
+            <div class="card">
+                <i class="fas fa-rss icon"></i>
+                <div class="content">
+                    <div class="label">Time</div>
+                    <div class="value" id="update-time">--<span class="unit">H</span></div>
+                </div>
+            </div>
+            <div class="card control-card">
+                <div class="button-group">
+                    <button id="onBtn" onclick="sendCommand('on')" class="btn btn-default"><i
+                            class="fas fa-power-off"></i> ON</button>
+                    <button id="offBtn" onclick="sendCommand('off')" class="btn btn-default"><i
+                            class="fas fa-power-off"></i> OFF</button>
+
+                </div>
+                <button class="reset-icon" onclick="resetCommand()">
+                    <i class="fa fa-refresh"></i>
+                </button>
+
+
+            </div>
+            <div class="card limit-card">
+                <div class="form-group row-with-button">
+                    <label for="powerLimitInput"><i class="fas fa-tachometer-alt"></i>Enter Power Limit: </label>
+                    <div class="input-button-wrapper">
+                        <input type="number" id="powerLimitInput" placeholder="Enter Power Limit">
+                        <button onclick="submitPowerLimit()" class="btn-submit">Submit</button>
+                    </div>
+                </div>
+
+            </div>
+            <div class="card">
+                <i class="fas fa-sliders-h icon"></i>
+                <div class="content">
+                    <div class="label">Current Power Limit</div>
+                    <div class="value" id="ww">--</div>
+                </div>
+
+            </div>
+            <div class="card limit-card">
+                <div class="form-group row-with-button">
+                    <label for="powerLimitInput"><i class="fas fa-tachometer-alt"></i>Set Timer Duration (in minutes):
+                    </label>
+                    <div class="input-button-wrapper">
+                        <input type="number" id="durationInput" min="1" placeholder="Enter Time Limit">
+                        <button onclick="startTimer()" class="btn-submit">Start Timer</button>
+                        <div id="timer">--:--</div>
+
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+        <br>
+
+        <section class="chart-section">
+            <h2><i class="fas fa-chart-line"></i> Live Data Chart</h2>
+            <canvas id="liveChart" width="400" height="200"></canvas>
+        </section>
+
+        <br>
+        <section class="historical-section">
+            <h2><i class="fas fa-history"></i> Historical Data</h2>
+
+
+            <form id="dateForm">
+                <div class="date-row">
+                    <div class="date-group">
+                        <label for="startDate"> <span class="date-label-icon">📅</span>From :</label>
+                        <input type="date" id="startDate" name="startDate">
+                    </div>
+                    <div class="date-group">
+                        <label for="endDate"> <span class="date-label-icon">📅</span>To :</label>
+                        <input type="date" id="endDate" name="endDate">
+                    </div>
+                    <div class="button-wrapper">
+
+                        <button type="submit" id="generateBtn" class="btn-generate">
+                            <i class="fas fa-play"></i> Generate Report
+                        </button>
+                    </div>
+                </div>
+            </form>
+            <div id="resultsSection" style="display: none;">
+                <div class="graph-section">
+                    <h3>Power Graph</h3>
+                    <canvas id="powerChart"></canvas>
+
+                    <h3>Energy Graph</h3>
+                    <canvas id="energyChart"></canvas>
+                </div>
+
+                <div id="historicalDataTable" style="display: none;">
+                    <h3>Historical Data</h3>
+                    <table id="dataTable">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Device</th>
+                                <th>Power (W)</th>
+                                <th>Energy (kWh)</th>
+                                <th>Voltage (V)</th>
+                                <th>Current (A)</th>
+                                <th>Active Power (kW)</th>
+                                <th>Frequency (Hz)</th>
+                                <th>Power Factor</th>
+                                <th>Active Energy (kWh)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dataBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section class="reports-section">
+            <h2><i class="fas fa-file-alt"></i>consumption reports</h2>
+
+            <div class="report-buttons">
+                <button onclick="generateReport('daily')" class="report-btn">
+                    <i class="fas fa-calendar-day"></i> daily report
+                </button>
+                <button onclick="generateReport('weekly')" class="report-btn">
+                    <i class="fas fa-calendar-week"></i> weekly report
+                </button>
+                <button onclick="generateReport('monthly')" class="report-btn">
+                    <i class="fas fa-calendar-alt"></i> monthly report
+                </button>
+            </div>
+
+            <div id="reportContainer" style="display: none;">
+                <div class="report-header">
+                    <h3 id="reportTitle"></h3>
+                    <p id="reportPeriod"></p>
+                </div>
+
+                <div class="report-summary">
+                    <div class="summary-card">
+                        <i class="fas fa-bolt"></i>
+                        <div>
+                            <span class="summary-label">Total Consumption</span>
+                            <span class="summary-value" id="totalConsumption"></span>
+                        </div>
+                    </div>
+                    <div class="summary-card">
+                        <i class="fas fa-clock"></i>
+                        <div>
+                            <span class="summary-label">Consumption Average per Hour</span>
+                            <span class="summary-value" id="avgConsumption"></span>
+                        </div>
+                    </div>
+                    <div class="summary-card">
+                        <i class="fas fa-chart-line"></i>
+                        <div>
+                            <span class="summary-label">Peak Consumption</span>
+                            <span class="summary-value" id="peakConsumption"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="report-charts">
+                    <canvas id="reportChart" width="400" height="200"></canvas>
+                </div>
+
+
+            </div>
+        </section>
+
+
+        <section class="safety-guidelines">
+            <h2><i class="fas fa-shield-alt"></i> Electrical Safety Guidelines</h2>
+            <div class="guidelines-container">
+                <div class="guideline-item">
+                    <i class="fas fa-plug"></i>
+                    <p>Always disconnect devices before maintenance or inspection.</p>
+                </div>
+                <div class="guideline-item">
+                    <i class="fas fa-fire-extinguisher"></i>
+                    <p>Avoid overloading outlets to prevent fire hazards.</p>
+                </div>
+                <div class="guideline-item">
+                    <i class="fas fa-user-tie"></i>
+                    <p>Only qualified technicians should install electrical devices.</p>
+                </div>
+                <div class="guideline-item">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p>Immediately turn off devices showing abnormal behavior.</p>
+                </div>
+                <div class="guideline-item">
+                    <i class="fas fa-tint-slash"></i>
+                    <p>Keep electrical devices away from moisture and water.</p>
+                </div>
+                <div class="guideline-item">
+                    <i class="fas fa-child"></i>
+                    <p>Keep devices out of children's reach for safety.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>Safe Power Monitoring System &copy; 2025 | ESP32 Based Solution</p>
+    </footer>
+</body>
+
+</html>
