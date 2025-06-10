@@ -38,12 +38,9 @@ latest_command = ""
 timer_data = {"end_time": 0}
 
 
-# @app.route('/')
-# def home():
-#     return render_template('index.html')
 @app.route('/')
 def home():
-    return "Server is running ✅"
+    return render_template('index.html')
 
 
 @app.route('/data', methods=['POST'])
