@@ -29,20 +29,6 @@ latest_data = {
     "pf": 0
 }
 
-# import random
-
-# while True:
-#     latest_data = {
-#         "voltage": round(random.uniform(210, 240), 2),     # Volts
-#         "current": round(random.uniform(0, 30), 2),         # Amps
-#         "power": round(random.uniform(0, 90), 2),         # Watts
-#         "energy": round(random.uniform(0, 100), 2),         # kWh
-#         "frequency": round(random.uniform(49.5, 50.5), 2),  # Hz
-#         "pf": round(random.uniform(0.5, 1.0), 2)            # Power factor
-#     }
-#     time.sleep(2)
-#     break
-
 
 
 power_limit = 100
@@ -525,13 +511,13 @@ def get_timer():
         timer_data["end_time"] = 0
         return jsonify({"remaining_seconds": 0})
 
-
 if __name__ == '__main__':
     scheduler = BackgroundScheduler()
     scheduler.add_job(func=save_hourly_snapshot, trigger='interval', seconds=20)
     scheduler.start()
 
     try:
-        app.run(host='0.0.0.0', port=5000, debug=True)
+        port = int(os.environ.get("PORT", 5000))  # <-- مهم لـ Railway
+        app.run(host='0.0.0.0', port=port, debug=True)
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
