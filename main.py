@@ -511,13 +511,16 @@ def get_timer():
         timer_data["end_time"] = 0
         return jsonify({"remaining_seconds": 0})
 
-if __name__ == '__main__':
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(func=save_hourly_snapshot, trigger='interval', seconds=20)
-    scheduler.start()
 
-    try:
-        port = int(os.environ.get("PORT", 5000))  # <-- مهم لـ Railway
-        app.run(host='0.0.0.0', port=port, debug=True)
-    except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
+
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=save_hourly_snapshot, trigger='interval', seconds=20)
+scheduler.start()
+
+import atexit
+atexit.register(lambda: scheduler.shutdown())
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))  # <-- مهم لـ Railway
+    app.run(host='0.0.0.0', port=port, debug=True)
