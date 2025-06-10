@@ -1,14 +1,24 @@
 from flask import Flask, render_template, jsonify, request
-import sqlite3
 import time
+from datetime import datetime, timedelta
+from collections import defaultdict
 
-from datetime import datetime
+from dateutil import parser
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from device_identifier import determineDeviceName
-from datetime import datetime, timedelta, date
+from supabase import create_client, Client
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
 
 app = Flask(__name__)
-DB_PATH = 'usage_hourly.db'
 
 latest_data = {
     "voltage": 0,
@@ -19,8 +29,27 @@ latest_data = {
     "pf": 0
 }
 
+# import random
+
+# while True:
+#     latest_data = {
+#         "voltage": round(random.uniform(210, 240), 2),     # Volts
+#         "current": round(random.uniform(0, 30), 2),         # Amps
+#         "power": round(random.uniform(0, 90), 2),         # Watts
+#         "energy": round(random.uniform(0, 100), 2),         # kWh
+#         "frequency": round(random.uniform(49.5, 50.5), 2),  # Hz
+#         "pf": round(random.uniform(0.5, 1.0), 2)            # Power factor
+#     }
+#     time.sleep(2)
+#     break
+
+
+
 power_limit = 100
 latest_command = ""
+
+# Timer data storage
+timer_data = {"end_time": 0}
 
 
 @app.route('/')
@@ -93,61 +122,65 @@ def historical_data():
     except (ValueError, TypeError):
         return jsonify({"message": "Invalid date format"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT strftime('%Y-%m-%d %H:00:00', Timestamp) AS hour,
-               "Power(W)",
-               "Energy Consumption(kWh)",
-               "Voltage",
-               "Current",
-               "Active Power (kW)",
-               "Frequency (Hz)",
-               "Power Factor",
-               "Active Energy (kWh)"
-        FROM energy_usage_hourly
-        WHERE Timestamp BETWEEN ? AND ?
-        ORDER BY hour
-    """, (start + " 00:00:00", end + " 23:59:59"))
+    # Supabase expects ISO 8601 timestamps, and we want full-day range
+    start_iso = start + "T00:00:00"
+    end_iso = end + "T23:59:59"
 
-    rows = cursor.fetchall()
-    conn.close()
+    try:
+        response = supabase.table("energy_usage_hourly") \
+            .select("*") \
+            .gte("Timestamp", start_iso) \
+            .lte("Timestamp", end_iso) \
+            .order("Timestamp", desc=False) \
+            .execute()
 
-    if not rows:
-        return jsonify({
+        rows = response.data
+
+        if not rows:
+            return jsonify({
+                "labels": [],
+                "power": [],
+                "energy": [],
+                "message": "No data found for selected range."
+            })
+
+        result = {
             "labels": [],
             "power": [],
             "energy": [],
-            "message": "No data found for selected range."
-        })
+            "table_data": []
+        }
 
-    result = {
-        "labels": [],
-        "power": [],
-        "energy": [],
-        "table_data": []
-    }
+        for row in rows:
+            hour = parser.isoparse(row["Timestamp"]).strftime("%Y-%m-%d %H:00:00")
+            power = round(row["Power(W)"], 2)
+            energy = round(row["Energy Consumption(kWh)"], 2)
+            voltage = round(row["Voltage"], 2)
+            current = round(row["Current"], 2)
+            active_power = round(row["Active Power (kW)"], 2)
+            frequency = round(row["Frequency (Hz)"], 2)
+            power_factor = round(row["Power Factor"], 2)
+            active_energy = round(row["Active Energy (kWh)"], 2)
 
-    for row in rows:
-        hour, power, energy, voltage, current, active_power, frequency, power_factor, active_energy = row
-        result["labels"].append(hour)
-        result["power"].append(round(power, 2))
-        result["energy"].append(round(energy, 2))
-        result["table_data"].append({
-            "hour": hour,
-            "power": round(power, 2),
-            "energy": round(energy, 2),
-            "voltage": round(voltage, 2),
-            "current": round(current, 2),
-            "active_power": round(active_power, 2),
-            "frequency": round(frequency, 2),
-            "power_factor": round(power_factor, 2),
-            "active_energy": round(active_energy, 2)
-        })
+            result["labels"].append(hour)
+            result["power"].append(power)
+            result["energy"].append(energy)
+            result["table_data"].append({
+                "hour": hour,
+                "power": power,
+                "energy": energy,
+                "voltage": voltage,
+                "current": current,
+                "active_power": active_power,
+                "frequency": frequency,
+                "power_factor": power_factor,
+                "active_energy": active_energy
+            })
 
-    return jsonify(result)
+        return jsonify(result)
 
-
+    except Exception as e:
+        return jsonify({"message": f"Supabase error: {str(e)}"}), 500
 @app.route('/control', methods=['POST'])
 def control():
     global latest_command
@@ -209,29 +242,31 @@ def save_hourly_snapshot():
                   f"Readings - V: {voltage}, A: {current}, W: {power}, kWh: {energy}")
             return
 
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        timestamp = datetime.now().isoformat()
         device_name = determineDeviceName(voltage, current, power)
 
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO energy_usage_hourly (
-                "Timestamp", "Device", "Power(W)", "Energy Consumption(kWh)", "Voltage",
-                "Current", "Active Power (kW)", "Frequency (Hz)", "Power Factor", "Active Energy (kWh)"
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            timestamp, device_name, power, energy, voltage, current,
-            power / 1000, float(latest_data['frequency']),
-            float(latest_data['pf']), energy
-        ))
-        conn.commit()
-        conn.close()
+        data = {
+            "Timestamp": timestamp,
+            "Device": device_name,
+            "Power(W)": power,
+            "Energy Consumption(kWh)": energy,
+            "Voltage": voltage,
+            "Current": current,
+            "Active Power (kW)": power / 1000,
+            "Frequency (Hz)": float(latest_data['frequency']),
+            "Power Factor": float(latest_data['pf']),
+            "Active Energy (kWh)": energy
+        }
 
-        print(f"[{timestamp}] Hourly snapshot saved for {device_name} - Power: {power}W, Current: {current}A")
+        response = supabase.table("energy_usage_hourly").insert(data).execute()
+
+        if response.error is None:
+            print(f"[{timestamp}] Hourly snapshot saved for {device_name} - Power: {power}W, Current: {current}A")
+        else:
+            print(f"❌ Failed to save to Supabase: {response.error}")
 
     except Exception as e:
-        print(f"Error saving hourly snapshot: {e}")
-
+        print(f"❌ Error saving hourly snapshot: {e}")
 
 
 
@@ -241,32 +276,58 @@ def save_hourly_snapshot():
 def daily_report():
     try:
         today = datetime.today().strftime('%Y-%m-%d')
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        start_iso = today + "T00:00:00"
+        end_iso = today + "T23:59:59"
 
-        cursor.execute("""
-            SELECT strftime('%H:00', Timestamp) AS hour,
-                   SUM("Energy Consumption(kWh)") AS total_energy,
-                   AVG("Power(W)") AS avg_power,
-                   MAX("Power(W)") AS peak_power
-            FROM energy_usage_hourly
-            WHERE Timestamp BETWEEN ? AND ?
-            GROUP BY hour
-            ORDER BY hour
-        """, (today + " 00:00:00", today + " 23:59:59"))
-        
-        rows = cursor.fetchall()
-        conn.close()
+        # جلب البيانات من supabase خلال اليوم
+        response = supabase.table("energy_usage_hourly") \
+        .select('"Timestamp", "Power(W)", "Energy Consumption(kWh)"') \
+        .gte("Timestamp", start_iso) \
+        .lte("Timestamp", end_iso) \
+        .order("Timestamp") \
+        .execute()
+
+
+
+        rows = response.data
 
         if not rows:
             return jsonify({"message": "No data found for today."}), 400
 
-        total_consumption = sum(row[1] for row in rows)
-        avg_consumption = total_consumption / len(rows) if rows else 0
-        peak_consumption = max(row[2] for row in rows)
+        # تجميع البيانات حسب الساعة
+        from collections import defaultdict
+        hourly_data = defaultdict(list)
 
-        labels = [row[0] for row in rows]
-        data = [row[1] for row in rows]
+        for row in rows:
+
+            timestamp = parser.isoparse(row["Timestamp"])
+            hour_str = timestamp.strftime("%H:00")
+
+            energy = float(row["Energy Consumption(kWh)"])
+            power = float(row["Power(W)"])
+
+            hourly_data[hour_str].append({
+                "energy": energy,
+                "power": power
+            })
+
+        labels = []
+        data = []
+        all_avg_powers = []
+
+        for hour in sorted(hourly_data.keys()):
+            entries = hourly_data[hour]
+            total_energy = sum(e["energy"] for e in entries)
+            avg_power = sum(e["power"] for e in entries) / len(entries)
+            peak_power = max(e["power"] for e in entries)
+
+            labels.append(hour)
+            data.append(round(total_energy, 2))
+            all_avg_powers.append(avg_power)
+
+        total_consumption = sum(data)
+        avg_consumption = total_consumption / len(data)
+        peak_consumption = max(all_avg_powers)
 
         report_data = {
             "total_consumption": round(total_consumption, 2),
@@ -281,36 +342,47 @@ def daily_report():
     except Exception as e:
         return jsonify({"message": f"Error: {str(e)}"}), 500
 
+
+
 @app.route('/report/weekly')
 def weekly_report():
     try:
-        # Calculate the start and end of the week (from Monday to Sunday)
         today = datetime.today()
         week_start = today - timedelta(days=today.weekday())
         week_end = week_start + timedelta(days=6)
 
-        # Create a list of all days of the week
+        start_of_week = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_week = week_end.replace(hour=23, minute=59, second=59, microsecond=0)
+
+        start_iso = start_of_week.isoformat() + "+00:00"
+        end_iso = end_of_week.isoformat() + "+00:00"
+
+
+        # Fetch from Supabase
+        response = supabase.table("energy_usage_hourly") \
+            .select('"Timestamp", "Power(W)", "Energy Consumption(kWh)"') \
+            .gte("Timestamp", start_iso) \
+            .lte("Timestamp", end_iso) \
+            .order("Timestamp") \
+            .execute()
+
+        rows = response.data
+
+        if not rows:
+            return jsonify({"message": "No data found for this week."}), 400
+
+        # Prepare days of the week
         days_of_week = [(week_start + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
 
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        daily_data = defaultdict(list)
 
-        cursor.execute("""
-            SELECT date(Timestamp) AS day,
-                   SUM("Energy Consumption(kWh)") AS total_energy,
-                   AVG("Power(W)") AS avg_power,
-                   MAX("Power(W)") AS peak_power
-            FROM energy_usage_hourly
-            WHERE Timestamp BETWEEN ? AND ?
-            GROUP BY day
-            ORDER BY day
-        """, (week_start.strftime('%Y-%m-%d') + " 00:00:00", week_end.strftime('%Y-%m-%d') + " 23:59:59"))
-
-        rows = cursor.fetchall()
-        conn.close()
-
-        # Convert the results to a dictionary for fast access by date
-        data_map = {row[0]: row for row in rows}
+        for row in rows:
+            ts = parser.isoparse(row["Timestamp"])  # ✅ يعالج +00:00 تلقائيًا
+            day_str = ts.strftime('%Y-%m-%d')
+            daily_data[day_str].append({
+                "energy": float(row["Energy Consumption(kWh)"]),
+                "power": float(row["Power(W)"])
+            })
 
         labels = []
         data = []
@@ -320,16 +392,17 @@ def weekly_report():
 
         for day in days_of_week:
             labels.append(day)
-            if day in data_map:
-                total_energy = data_map[day][1]
-                avg_power = data_map[day][2]
-                peak_power = data_map[day][3]
+            entries = daily_data.get(day, [])
+            if entries:
+                total_energy = sum(e["energy"] for e in entries)
+                avg_power = sum(e["power"] for e in entries) / len(entries)
+                peak_power = max(e["power"] for e in entries)
             else:
                 total_energy = 0
                 avg_power = 0
                 peak_power = 0
 
-            data.append(total_energy)
+            data.append(round(total_energy, 2))
             total_consumption += total_energy
             avg_power_list.append(avg_power)
             peak_power_list.append(peak_power)
@@ -350,6 +423,7 @@ def weekly_report():
     except Exception as e:
         return jsonify({"message": f"Error: {str(e)}"}), 500
 
+
 @app.route('/report/monthly')
 def monthly_report():
     try:
@@ -358,23 +432,22 @@ def monthly_report():
         next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
         month_end = next_month - timedelta(seconds=1)
 
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        # استخدم isoformat() لإخراج "YYYY-MM-DDTHH:MM:SS"
+        start_iso = month_start.isoformat()      # e.g. "2025-06-01T00:00:00"
+        end_iso   = month_end.isoformat() + "+00:00"  # e.g. "2025-06-30T23:59:59+00:00"
 
-        cursor.execute("""
-            SELECT Timestamp,
-                   "Energy Consumption(kWh)",
-                   "Power(W)"
-            FROM energy_usage_hourly
-            WHERE Timestamp BETWEEN ? AND ?
-        """, (month_start.strftime('%Y-%m-%d %H:%M:%S'), month_end.strftime('%Y-%m-%d %H:%M:%S')))
+        response = supabase.table("energy_usage_hourly") \
+            .select('"Timestamp", "Power(W)", "Energy Consumption(kWh)"') \
+            .gte("Timestamp", start_iso) \
+            .lte("Timestamp", end_iso) \
+            .order("Timestamp", desc=False) \
+            .execute()
 
-        rows = cursor.fetchall()
-        conn.close()
-
+        rows = response.data
         if not rows:
             return jsonify({"message": "No data found for this month."}), 400
 
+        # جمع البيانات أسبوعيًا
         weekly_data = {
             "Week 1": {"total_energy": 0, "power_list": []},
             "Week 2": {"total_energy": 0, "power_list": []},
@@ -383,41 +456,45 @@ def monthly_report():
         }
 
         for row in rows:
-            timestamp = datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
-            week_number = ((timestamp - month_start).days // 7) + 1
+            # حل مشكلة الـ timezone باستخدام parser
+            dt = parser.isoparse(row["Timestamp"])
+            # احسب رقم الأسبوع داخل الشهر
+            week_number = ((dt.day - 1) // 7) + 1
             week_key = f"Week {week_number}"
-            if week_key in weekly_data:
-                weekly_data[week_key]["total_energy"] += row[1]
-                weekly_data[week_key]["power_list"].append(row[2])
 
+            energy = float(row["Energy Consumption(kWh)"])
+            power  = float(row["Power(W)"])
+
+            weekly_data[week_key]["total_energy"] += energy
+            weekly_data[week_key]["power_list"].append(power)
+
+        # تجهيز المخرجات
         labels = []
-        data = []
+        data   = []
         all_avg_powers = []
         all_peak_powers = []
 
         for week in ["Week 1", "Week 2", "Week 3", "Week 4"]:
-            values = weekly_data[week]
+            wd = weekly_data[week]
             labels.append(week)
-            data.append(round(values["total_energy"], 2))
-            if values["power_list"]:
-                avg_power = sum(values["power_list"]) / len(values["power_list"])
-                peak_power = max(values["power_list"])
+            data.append(round(wd["total_energy"], 2))
+
+            if wd["power_list"]:
+                avg_power  = sum(wd["power_list"]) / len(wd["power_list"])
+                peak_power = max(wd["power_list"])
             else:
-                avg_power = 0
+                avg_power  = 0
                 peak_power = 0
+
             all_avg_powers.append(avg_power)
             all_peak_powers.append(peak_power)
 
-        total_consumption = sum(data)
-        avg_consumption = total_consumption / 4
-        peak_consumption = max(all_peak_powers)
-
         report_data = {
-            "total_consumption": round(total_consumption, 2),
-            "avg_consumption": round(avg_consumption, 2),
-            "peak_consumption": round(peak_consumption, 2),
+            "total_consumption": round(sum(data), 2),
+            "avg_consumption":   round(sum(data) / 4, 2),
+            "peak_consumption":  round(max(all_peak_powers), 2),
             "labels": labels,
-            "data": data
+            "data":   data
         }
 
         return jsonify(report_data)
@@ -425,9 +502,6 @@ def monthly_report():
     except Exception as e:
         return jsonify({"message": f"Error: {str(e)}"}), 500
 
-timer_data = {
-    "end_time": 0 
-}
 
 @app.route('/set_timer', methods=['POST'])
 def set_timer():
