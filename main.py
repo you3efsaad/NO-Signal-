@@ -522,5 +522,5 @@ import atexit
 atexit.register(lambda: scheduler.shutdown())
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))  # <-- مهم لـ Railway
+    port = int(os.environ.get("PORT", 8080))  # <-- مهم لـ Railway
     app.run(host='0.0.0.0', port=port, debug=True)
