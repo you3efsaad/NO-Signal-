@@ -517,10 +517,46 @@ def get_timer():
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=save_hourly_snapshot, trigger='interval', seconds=20)
 scheduler.start()
+# ---------------------- Start Safe Boot Setup ----------------------
 
 import atexit
-atexit.register(lambda: scheduler.shutdown())
 
+def safe_boot():
+    # Debug: Check .env variables
+    print(f"[INFO] SUPABASE_URL = {SUPABASE_URL}")
+    print(f"[INFO] SUPABASE_KEY = {SUPABASE_KEY[:6]}..." if SUPABASE_KEY else "[WARN] No SUPABASE_KEY found")
+
+    # Try Supabase client connection
+    try:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            raise ValueError("Missing Supabase credentials.")
+        # Just trigger a harmless call to test:
+        supabase.table("energy_usage_hourly").select("*").limit(1).execute()
+        print("[✅] Supabase client initialized successfully.")
+    except Exception as e:
+        print(f"[❌] Failed to connect to Supabase: {e}")
+
+    # Setup scheduler
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(func=save_hourly_snapshot, trigger='interval', seconds=20)
+    scheduler.start()
+
+    atexit.register(lambda: scheduler.shutdown())
+
+    # Detect environment
+    is_dev = os.environ.get("FLASK_ENV") == "development"
+
+    # Default to development if not explicitly set
+    if "FLASK_ENV" not in os.environ:
+        os.environ["FLASK_ENV"] = "development"
+        is_dev = True
+
+    host = '127.0.0.1' if is_dev else '0.0.0.0'
+    port = int(os.environ.get("PORT", 5000 if is_dev else 8080))
+
+    print(f"[🚀] Starting app on http://{host}:{port} (mode: {'development' if is_dev else 'production'})")
+    app.run(host=host, port=port, debug=is_dev)
+
+# Run app
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8080))  # <-- مهم لـ Railway
-    app.run(host='0.0.0.0', port=port, debug=True)
+    safe_boot()
