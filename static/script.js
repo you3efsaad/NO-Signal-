@@ -90,26 +90,18 @@ function updateTable(tableData) {
         tableBody.appendChild(row);
     });
 }
+// أرسل أمر التشغيل/الإيقاف
 function sendCommand(cmd) {
     fetch('/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: cmd })
     })
-        .then(res => res.json())
-        .then(data => {
+        .then(() => {
             console.log("Command sent:", cmd);
-            updateButtons(cmd);
+            updateButtons(cmd);  // feedback فوري
         })
-        .catch(error => {
-            console.error('Error sending command:', error);
-        });
-}
-function resetCommand() {
-    fetch('/reset_command', {
-        method: 'POST'
-    })
-        .then(res => res.json())
+        .catch(error => console.error('Error sending command:', error));
 }
 
 function updateButtons(active) {
@@ -119,17 +111,35 @@ function updateButtons(active) {
     if (active === 'on') {
         onBtn.style.backgroundColor = 'green';
         onBtn.style.color = 'white';
-
         offBtn.style.backgroundColor = 'lightgray';
         offBtn.style.color = 'black';
-    } else if (active === 'off') {
+    } else {
         offBtn.style.backgroundColor = 'red';
         offBtn.style.color = 'white';
-
         onBtn.style.backgroundColor = 'lightgray';
         onBtn.style.color = 'black';
     }
 }
+
+function pollData() {
+    fetch('/latest')
+        .then(res => res.json())
+        .then(data => {
+            // عرض قيمة الطاقة
+            document.getElementById('power').innerHTML =
+                data.power + '<span class="unit">W</span>';
+            // تحديث الأزرار بناءً على قيمة power
+            const state = data.power > 0 ? 'on' : 'off';
+            updateButtons(state);
+        })
+        .catch(err => console.error('Error polling data:', err));
+}
+
+// شغّل pollData كل ثانية
+setInterval(pollData, 1000);
+// شغّل فوراً عند تحميل الصفحة
+pollData();
+
 
 
 document.addEventListener("DOMContentLoaded", () => {

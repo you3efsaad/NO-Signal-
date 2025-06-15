@@ -2,16 +2,12 @@
 #include <HTTPClient.h>
 #include <PZEM004Tv30.h>
 #include <ArduinoJson.h>
+#include <WiFiManager.h> // مكتبة WiFiManager
 
-// WiFi credentials
-const char *ssid = "yousef";
-const char *password = "123456788";
+// Base URL of the Railway server
+const char *baseURL = "https://no-signal-production.up.railway.app";
 
-// Flask server IP
-const char *serverURL = "http://192.168.137.1:5000/data";
-const char *controlURL = "http://192.168.239.112:5000/esp_command";
-const char *controllimitURL = "http://192.168.239.112:5000/esp_limit";
-
+// Global variables
 String deviceName = "";
 String command = "";
 float powerLimit = 100.0;
@@ -20,9 +16,7 @@ unsigned long countdownStart = 0;
 unsigned long countdownDuration = 0;
 bool countdownActive = false;
 bool relayOpened = false;
-// تعريف متغير للتأكد من تشغيل الفصل مرة واحدة
-// قيمة ابتدائية مثلاً
-// <-- Move it here
+
 
 // PZEM Serial pins
 #define PZEM_RX_PIN 16
@@ -31,7 +25,6 @@ bool relayOpened = false;
 #define BUZZER_PIN 13
 #define LED_PIN 13
 
-// Initialize PZEM sensor
 PZEM004Tv30 pzem(Serial2, PZEM_RX_PIN, PZEM_TX_PIN);
 
 void setup()
@@ -44,80 +37,77 @@ void setup()
   pinMode(LED_PIN, OUTPUT);
 
   digitalWrite(RELAY_PIN, HIGH);
-  digitalWrite(BUZZER_PIN, LOW); // إيقاف البازر
-  digitalWrite(LED_PIN, LOW);    // الدائرة في وضع التشغيل في البداية
+  digitalWrite(BUZZER_PIN, LOW);
+  digitalWrite(LED_PIN, LOW);
 
-  // Connect to WiFi
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED)
+  // استخدام WiFiManager للاتصال بالواي فاي
+  WiFiManager wm;
+  bool res = wm.autoConnect("✌️ y & m ✌️");
+
+  if (!res)
   {
-    delay(500);
-    Serial.print(".");
+    Serial.println("Failed to connect to WiFi.");
+    ESP.restart();
   }
-  Serial.println("\nConnected to WiFi");
-
-  // Get device name from server
-  if (WiFi.status() == WL_CONNECTED)
+  else
   {
-    HTTPClient http;
-    http.begin("http://192.168.137.1:5000/get_device");
-    int httpCode = http.GET();
+    Serial.println("Connected to WiFi.");
+    Serial.println(WiFi.localIP());
+  }
 
-    if (httpCode == 200)
+  // Fetch device name from server
+  HTTPClient http;
+  http.begin(String(baseURL) + "/get_device");
+  int httpCode = http.GET();
+
+  if (httpCode == 200)
+  {
+    String payload = http.getString();
+    Serial.println("Device payload: " + payload);
+
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, payload);
+
+    if (!error)
     {
-      String payload = http.getString();
-      int start = payload.indexOf(":\"") + 2;
-      int end = payload.indexOf("\"", start);
-      deviceName = payload.substring(start, end);
-      Serial.print("Device Name Fetched: ");
-      Serial.println(deviceName);
+      deviceName = doc["device"].as<String>();
+      Serial.println("Device Name Fetched: " + deviceName);
     }
     else
     {
-      Serial.println("Failed to get device name");
+      Serial.println("Failed to parse JSON");
       deviceName = "FallbackDevice";
     }
-    http.end();
   }
-
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
+  else
+  {
+    Serial.println("Failed to get device name");
+    deviceName = "FallbackDevice";
+  }
+  http.end();
 }
+
 void getControllimit()
 {
   if (WiFi.status() == WL_CONNECTED)
   {
     HTTPClient http;
-    http.begin(controllimitURL);
+    http.begin(String(baseURL) + "/esp_limit");
     int httpCode = http.GET();
 
     if (httpCode == 200)
     {
       String payload = http.getString();
-      Serial.println("Received payload: " + payload);
+      Serial.println("Received limit: " + payload);
 
-      // تحليل JSON
       StaticJsonDocument<200> doc;
       DeserializationError error = deserializeJson(doc, payload);
 
       if (!error)
       {
         powerLimit = doc["power_limit"].as<float>();
-
-        Serial.println("Parsed command: " + String(powerLimit));
-      }
-      else
-      {
-        Serial.println("Failed to parse JSON");
       }
     }
-    else
-    {
-      Serial.print("HTTP error: ");
-      Serial.println(httpCode);
-    }
-
     http.end();
   }
 }
@@ -127,39 +117,25 @@ void getControlCommand()
   if (WiFi.status() == WL_CONNECTED)
   {
     HTTPClient http;
-    http.begin(controlURL);
+    http.begin(String(baseURL) + "/esp_command");
     int httpCode = http.GET();
 
     if (httpCode == 200)
     {
       String payload = http.getString();
-      Serial.println("Received payload: " + payload);
+      Serial.println("Received command: " + payload);
 
-      // تحليل JSON
       StaticJsonDocument<200> doc;
       DeserializationError error = deserializeJson(doc, payload);
 
       if (!error)
       {
         command = doc["command"].as<String>();
-
-        Serial.println("Parsed command: " + command);
-      }
-      else
-      {
-        Serial.println("Failed to parse JSON");
       }
     }
-    else
-    {
-      Serial.print("HTTP error: ");
-      Serial.println(httpCode);
-    }
-
     http.end();
   }
 }
-
 void applyCommand()
 {
   if (command == "on")
@@ -181,18 +157,19 @@ void applyCommand()
   }
 }
 
+
 void getCountdownFromServer()
 {
   if (WiFi.status() == WL_CONNECTED)
   {
     HTTPClient http;
-    http.begin("http://192.168.239.112:5000/get_timer");
+    http.begin(String(baseURL) + "/get_timer");
     int httpCode = http.GET();
 
     if (httpCode == 200)
     {
       String payload = http.getString();
-      Serial.println("تايمر السيرفر: " + payload);
+      Serial.println("Timer payload: " + payload);
 
       StaticJsonDocument<200> doc;
       DeserializationError error = deserializeJson(doc, payload);
@@ -202,22 +179,12 @@ void getCountdownFromServer()
         int remainingSeconds = doc["remaining_seconds"];
         if (remainingSeconds > 0)
         {
-          countdownDuration = remainingSeconds * 1000UL; // بالملي ثانية
+          countdownDuration = remainingSeconds * 1000UL;
           countdownStart = millis();
           countdownActive = true;
           relayOpened = false;
-
-          digitalWrite(RELAY_PIN, HIGH); // شغّل الدائرة
-          Serial.println("بدأ التايمر العد التنازلي لثواني: " + String(remainingSeconds));
+          digitalWrite(RELAY_PIN, HIGH);
         }
-        else
-        {
-          Serial.println("لا يوجد تايمر مفعل حاليًا");
-        }
-      }
-      else
-      {
-        Serial.println("خطأ في تحليل JSON");
       }
     }
     http.end();
@@ -230,18 +197,16 @@ void checkCountdown()
   {
     if (millis() - countdownStart >= countdownDuration)
     {
-      digitalWrite(RELAY_PIN, LOW); // فتح الريليه بعد العد التنازلي
+      digitalWrite(RELAY_PIN, LOW);
       relayOpened = true;
       countdownActive = false;
-      Serial.println("انتهى التايمر وتم فتح الريليه");
+      Serial.println("Timer ended, relay off");
     }
   }
 }
 
-// Read sensor values
 void loop()
 {
-  // Read sensor values
   getControllimit();
 
   float voltage = pzem.voltage();
@@ -251,53 +216,39 @@ void loop()
   float frequency = pzem.frequency();
   float pf = pzem.pf();
 
-  if (isnan(voltage) || isnan(current) || isnan(power) || isnan(energy) || isnan(frequency) || isnan(pf))
+  if (isnan(voltage) || isnan(current) || isnan(power))
   {
-    Serial.println("Error reading from sensor");
+    Serial.println("Sensor read error");
     delay(2000);
     return;
   }
 
-  // Check and act on power limit
   if (power > powerLimit && !hasTripped)
   {
-    digitalWrite(RELAY_PIN, LOW);   // إغلاق الدائرة
-    digitalWrite(BUZZER_PIN, HIGH); // تشغيل البازر
-    digitalWrite(LED_PIN, HIGH);    // تشغيل الليد
+    digitalWrite(RELAY_PIN, LOW);
+    digitalWrite(BUZZER_PIN, HIGH);
+    digitalWrite(LED_PIN, HIGH);
     delay(3000);
-    digitalWrite(BUZZER_PIN, LOW); // إيقاف البازر
+    digitalWrite(BUZZER_PIN, LOW);
     digitalWrite(LED_PIN, LOW);
-
     hasTripped = true;
 
-    // إرسال الأمر للسيرفر لتحديث "command" إلى "off"
     if (WiFi.status() == WL_CONNECTED)
     {
       HTTPClient http;
-      http.begin(controlURL); // <-- تأكد إنه يشير إلى /control
+      http.begin(String(baseURL) + "/esp_command");
       http.addHeader("Content-Type", "application/json");
 
       String cmdPayload = "{\"command\":\"off\"}";
-      int responseCode = http.POST(cmdPayload);
-
-      if (responseCode > 0)
-      {
-        Serial.println("Command updated on server: off");
-      }
-      else
-      {
-        Serial.println("Failed to update command on server");
-      }
-
+      http.POST(cmdPayload);
       http.end();
     }
   }
 
-  // Send sensor data
   if (WiFi.status() == WL_CONNECTED)
   {
     HTTPClient http;
-    http.begin(serverURL);
+    http.begin(String(baseURL) + "/data");
     http.addHeader("Content-Type", "application/json");
 
     String payload = "{";
@@ -315,21 +266,15 @@ void loop()
     int httpResponseCode = http.POST(payload);
     http.end();
 
-    // Just get control command (no action)
-
     getControlCommand();
     applyCommand();
+
     if (!countdownActive)
     {
       getCountdownFromServer();
     }
-    checkCountdown(); // يشيّك إذا خلص
 
-    // تنفيذ الأمر بناءً على القيمة
-  }
-  else
-  {
-    Serial.println("WiFi Disconnected");
+    checkCountdown();
   }
 
   delay(2000);

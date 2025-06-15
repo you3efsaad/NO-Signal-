@@ -4,12 +4,21 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 from dateutil import parser
+from threading import Timer, Lock
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from device_identifier import determineDeviceName
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
+last_update = datetime.now()
+disconnect_timeout = timedelta(seconds=10)
+
+
+def check_timeout():
+    global latest_data
+    if datetime.now() - last_update > disconnect_timeout:
+        latest_data = {k: 0 for k in latest_data}
 
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -29,14 +38,26 @@ latest_data = {
     "pf": 0
 }
 
-
-
-power_limit = 100
 latest_command = ""
-
+power_limit = 100
+reset_timer = None
+timer_lock = Lock()
 # Timer data storage
 timer_data = {"end_time": 0}
 
+def schedule_reset(delay=15):
+    global reset_timer
+    def do_reset():
+        global latest_command
+        with timer_lock:
+            latest_command = ""
+            reset_timer = None
+
+    with timer_lock:
+        if reset_timer:
+            reset_timer.cancel()
+        reset_timer = Timer(delay, do_reset)
+        reset_timer.start()
 
 @app.route('/')
 def home():
@@ -45,9 +66,11 @@ def home():
 
 @app.route('/data', methods=['POST'])
 def receive_data():
-    global latest_data
+    global latest_data, last_update  # Add this line
+
     try:
         data = request.get_json()
+        
         if not data:
             return jsonify({"status": "error", "message": "No data received"}), 400
 
@@ -79,6 +102,9 @@ def receive_data():
             "frequency": float(data['frequency']),
             "pf": float(data['power_factor'])
         }
+        # استقبلت داتا جديدة — حدّث timestamp
+        last_update = datetime.now()
+
 
         return jsonify({"status": "received"})
 
@@ -170,21 +196,21 @@ def historical_data():
 @app.route('/control', methods=['POST'])
 def control():
     global latest_command
-    data = request.get_json()
-    if not data:
-        return jsonify({'message': 'No JSON data provided'}), 400
-
-    command = data.get('command')
-    if command in ['on', 'off']:
-        latest_command = command
-        return jsonify({'message': f'Command {command} received'})
-
+    data = request.get_json() or {}
+    cmd = data.get('command')
+    if cmd in ('on', 'off'):
+        latest_command = cmd
+        if cmd == 'on':
+            # جدولة إعادة الضبط بعد 15 ثانية
+            schedule_reset(15)
+        else:
+            # إذا جاء “off” قبل انتهاء المؤقت، نلغي المؤقت
+            with timer_lock:
+                if reset_timer:
+                    reset_timer.cancel()
+                    reset_timer = None
+        return jsonify({'message': f'Command {cmd} received'})
     return jsonify({'message': 'Invalid command'}), 400
-@app.route('/reset_command', methods=['POST'])
-def reset_command():
-    global latest_command
-    latest_command = ""  
-    return jsonify({'message': 'Command reset to empty'})
 
 @app.route('/esp_command', methods=['GET'])
 def esp_command():
@@ -538,7 +564,10 @@ def safe_boot():
 
     # Setup scheduler
     scheduler = BackgroundScheduler()
+# داخل safe_boot بعد scheduler.start()
     scheduler.add_job(func=save_hourly_snapshot, trigger='interval', seconds=20)
+    scheduler.add_job(func=check_timeout, trigger='interval', seconds=5)
+    
     scheduler.start()
 
     atexit.register(lambda: scheduler.shutdown())
